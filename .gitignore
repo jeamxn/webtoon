@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+.turbo/
+.react-router/
+.env
+data/
+*.log
+.DS_Store
