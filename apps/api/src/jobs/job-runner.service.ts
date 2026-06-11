@@ -146,7 +146,7 @@ export class JobRunnerService {
         if (!panel) throw new Error(`panel ${panelIndex} not found`);
 
         onProgress(`컷 이미지 생성 중: ${episodeIndex}화 ${panelIndex}컷\n`);
-        const refs = await this.panelRefs(project, panel);
+        const { refs, styleCount, charNames } = await this.panelRefs(project, panel);
         const prevPanel = episode.panels.find((p) => p.index === panelIndex - 1);
         const nextPanel = episode.panels.find((p) => p.index === panelIndex + 1);
         const contextParts: string[] = [];
@@ -156,15 +156,29 @@ export class JobRunnerService {
           ? ` Story context — for continuity ONLY, do NOT draw these moments: ${contextParts.join(" / ")}.` +
             " Keep character emotions, lighting, and scene continuity consistent with this flow."
           : "";
+        const refRoles: string[] = [];
+        if (styleCount > 0) {
+          refRoles.push(
+            `The first ${styleCount} reference image(s) are ART STYLE samples ONLY — copy their drawing style, line work, coloring and rendering, but NEVER their characters, faces, layout, or composition.`,
+          );
+        }
+        if (charNames.length > 0) {
+          refRoles.push(
+            `The remaining reference image(s) are CHARACTER sheets, in this order: ${charNames.join(", ")}. Use them ONLY for each character's face, hair, outfit and physique — keep every character perfectly on-model. Do not copy the sheet's collage layout.`,
+          );
+        }
+        const dialogueInstr = panel.dialogue
+          ? ` This cut HAS dialogue. Draw proper webtoon speech bubble(s) containing exactly this Korean text: "${panel.dialogue}". Use clean rounded speech bubbles with a tail pointing to the speaker (or a rectangular caption box for narration/system text). The speaking character's facial expression and body language MUST match the emotion of the dialogue.`
+          : " This cut has NO dialogue — do not draw any speech bubbles or text.";
         const prompt =
           `A single webtoon cut: exactly ONE scene at ONE moment in time. ${panel.imagePrompt}` +
           storyContext +
+          dialogueInstr +
           (project.storyboard ? ` Art style: ${project.storyboard.artStyle}.` : "") +
           " Korean vertical-scroll webtoon aesthetic." +
           " IMPORTANT: one full-bleed illustration only — do NOT divide the image into multiple panels," +
           " frames, or a comic-page grid. No panel borders, no sequences, no before/after shots." +
-          " Reference images are character design sheets and style samples: copy the character designs" +
-          " and art style ONLY, never their collage/sheet layout.";
+          (refRoles.length > 0 ? ` ${refRoles.join(" ")}` : "");
         const png = await this.llm.generateImage(prompt, refs);
         const imageId = await this.images.save(project.id, png);
         await this.projects.update(job.projectId, (p) => {
@@ -205,7 +219,7 @@ export class JobRunnerService {
     return out;
   }
 
-  /** panel references: character sheets of appearing characters + example style images */
+  /** panel references: example style images first, then character sheets of appearing characters */
   private async panelRefs(
     project: {
       id: string;
@@ -213,16 +227,26 @@ export class JobRunnerService {
       characters: Character[];
     },
     panel: Panel,
-  ): Promise<{ buffer: Buffer; name: string }[]> {
-    const refs = await this.exampleRefs(project);
+  ): Promise<{
+    refs: { buffer: Buffer; name: string }[];
+    styleCount: number;
+    charNames: string[];
+  }> {
+    // style refs: cap at 2 so character sheets always fit (API max 6 refs)
+    const styleRefs = (await this.exampleRefs(project)).slice(0, 2);
+    const charRefs: { buffer: Buffer; name: string }[] = [];
+    const charNames: string[] = [];
     for (const name of panel.characterNames ?? []) {
       const c = project.characters.find((x) => x.name === name);
       if (!c?.imageUrl) continue;
       const id = c.imageUrl.split("/").pop();
       if (!id) continue;
       const stored = await this.images.get(id);
-      refs.push({ buffer: stored.content, name: `char-${c.name}.png` });
+      charRefs.push({ buffer: stored.content, name: `char-${c.name}.png` });
+      charNames.push(c.name);
+      if (charRefs.length >= 4) break;
     }
-    return refs.slice(0, 6);
+    const refs = [...styleRefs, ...charRefs].slice(0, 6);
+    return { refs, styleCount: styleRefs.length, charNames };
   }
 }

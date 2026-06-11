@@ -92,6 +92,20 @@ export class ProjectsService {
     return this.runner.enqueue(id, "panel_image", { episodeIndex, panelIndex });
   }
 
+  /** enqueue panel_image jobs for multiple panels of one episode */
+  async generatePanelImages(
+    id: string,
+    episodeIndex: number,
+    panelIndexes: number[],
+  ): Promise<Job[]> {
+    const unique = [...new Set(panelIndexes)].filter((n) => Number.isFinite(n));
+    const jobs: Job[] = [];
+    for (const panelIndex of unique) {
+      jobs.push(await this.runner.enqueue(id, "panel_image", { episodeIndex, panelIndex }));
+    }
+    return jobs;
+  }
+
   regenerateCharacters(id: string): Promise<Job> {
     return this.runner.enqueue(id, "characters", {});
   }

@@ -102,4 +102,14 @@ export class ProjectsController {
   ) {
     return this.projects.generatePanelImage(id, Number(index), Number(panel));
   }
+
+  /** batch: enqueue panel image jobs for multiple panels at once */
+  @Post(":id/episodes/:index/panels-images")
+  panelImages(
+    @Param("id") id: string,
+    @Param("index") index: string,
+    @Body("panels") panels: number[],
+  ) {
+    return this.projects.generatePanelImages(id, Number(index), panels ?? []);
+  }
 }

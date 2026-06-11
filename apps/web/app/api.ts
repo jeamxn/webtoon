@@ -106,6 +106,18 @@ export function generatePanelImage(
   }).then((r) => json<Job>(r));
 }
 
+export function generatePanelImages(
+  id: string,
+  episodeIndex: number,
+  panels: number[],
+): Promise<Job[]> {
+  return fetch(`/api/projects/${id}/episodes/${episodeIndex}/panels-images`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ panels }),
+  }).then((r) => json<Job[]>(r));
+}
+
 /** subscribe to project SSE events; returns cleanup fn */
 export function subscribeEvents(id: string, onEvent: (e: ProjectEvent) => void): () => void {
   const es = new EventSource(`/api/projects/${id}/events`);
