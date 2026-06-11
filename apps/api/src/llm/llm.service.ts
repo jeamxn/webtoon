@@ -1,10 +1,7 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import type { EpisodeDetail, Project, Question, Storyboard } from "@webtoon/shared";
+import type { Character, EpisodeDetail, Project, Question, Storyboard } from "@webtoon/shared";
 import OpenAI, { toFile } from "openai";
-import { GENERATED_DIR, UPLOADS_DIR } from "../storage/paths";
 
 const QUESTIONS_SCHEMA = {
   type: "object",
@@ -39,21 +36,12 @@ const QUESTIONS_SCHEMA = {
 const STORYBOARD_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "logline", "genre", "artStyle", "characters", "episodes"],
+  required: ["title", "logline", "genre", "artStyle", "episodes"],
   properties: {
     title: { type: "string" },
     logline: { type: "string" },
     genre: { type: "string" },
     artStyle: { type: "string" },
-    characters: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name", "description"],
-        properties: { name: { type: "string" }, description: { type: "string" } },
-      },
-    },
     episodes: {
       type: "array",
       items: {
@@ -64,6 +52,28 @@ const STORYBOARD_SCHEMA = {
           index: { type: "integer" },
           title: { type: "string" },
           synopsis: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+const CHARACTERS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["characters"],
+  properties: {
+    characters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "description", "appearance", "imagePrompt"],
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          appearance: { type: "string" },
+          imagePrompt: { type: "string" },
         },
       },
     },
@@ -83,17 +93,41 @@ const EPISODE_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["index", "description", "dialogue", "imagePrompt"],
+        required: ["index", "description", "dialogue", "imagePrompt", "characterNames"],
         properties: {
           index: { type: "integer" },
           description: { type: "string" },
           dialogue: { type: "string" },
           imagePrompt: { type: "string" },
+          characterNames: { type: "array", items: { type: "string" } },
         },
       },
     },
   },
 } as const;
+
+const EPISODES_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["episodes"],
+  properties: {
+    episodes: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "title", "synopsis"],
+        properties: {
+          index: { type: "integer" },
+          title: { type: "string" },
+          synopsis: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+export type ProgressFn = (chunk: string) => void;
 
 @Injectable()
 export class LlmService {
@@ -119,13 +153,15 @@ export class LlmService {
     ].join("\n\n");
   }
 
+  /** streaming structured output; onProgress receives raw json text deltas */
   private async structured<T>(args: {
     system: string;
     user: string;
     schemaName: string;
     schema: Record<string, unknown>;
+    onProgress?: ProgressFn;
   }): Promise<T> {
-    const res = await this.client.responses.create({
+    const stream = this.client.responses.stream({
       model: this.textModel,
       instructions: args.system,
       input: args.user,
@@ -138,10 +174,14 @@ export class LlmService {
         },
       },
     });
+    stream.on("response.output_text.delta", (e: { delta: string }) => {
+      args.onProgress?.(e.delta);
+    });
+    const res = await stream.finalResponse();
     return JSON.parse(res.output_text) as T;
   }
 
-  async generateQuestions(project: Project): Promise<Question[]> {
+  async generateQuestions(project: Project, onProgress?: ProgressFn): Promise<Question[]> {
     const round = project.rounds.length + 1;
     const out = await this.structured<{ questions: Question[] }>({
       system:
@@ -153,6 +193,7 @@ export class LlmService {
       user: this.interviewContext(project),
       schemaName: "interview_questions",
       schema: QUESTIONS_SCHEMA as unknown as Record<string, unknown>,
+      onProgress,
     });
     return out.questions.map((q, i) => ({
       ...q,
@@ -161,60 +202,110 @@ export class LlmService {
     }));
   }
 
-  async generateStoryboard(project: Project): Promise<Storyboard> {
+  async generateStoryboard(project: Project, onProgress?: ProgressFn): Promise<Storyboard> {
     return this.structured<Storyboard>({
       system:
         "당신은 웹툰 기획 전문 작가다. 주제와 인터뷰 내용을 바탕으로 전체 스토리보드를 작성하라. " +
-        "제목, 로그라인, 장르, 화풍(artStyle, 예시 이미지 기반의 그림체 묘사), 주요 등장인물, " +
+        "제목, 로그라인, 장르, 화풍(artStyle, 예시 이미지 기반의 그림체 묘사), " +
         "그리고 화(episode)별 줄거리를 작성하라. 답변에서 화 수가 언급되면 따르고, 없으면 4~8화로 구성하라. " +
         "모든 텍스트는 한국어로 작성하라.",
       user: this.interviewContext(project),
       schemaName: "storyboard",
       schema: STORYBOARD_SCHEMA as unknown as Record<string, unknown>,
+      onProgress,
     });
   }
 
-  async generateEpisodeDetail(project: Project, episodeIndex: number): Promise<EpisodeDetail> {
+  async generateCharacters(
+    project: Project,
+    onProgress?: ProgressFn,
+  ): Promise<Omit<Character, "id" | "imageUrl">[]> {
+    const sb = project.storyboard;
+    const out = await this.structured<{ characters: Omit<Character, "id" | "imageUrl">[] }>({
+      system:
+        "당신은 웹툰 캐릭터 디자이너다. 스토리보드를 바탕으로 주요 등장인물 캐릭터 시트를 작성하라. " +
+        "name/description(성격·역할, 한국어)/appearance(외형 상세, 한국어)와, " +
+        "imagePrompt에는 캐릭터 시트 이미지 생성용 영어 프롬프트를 작성하라. " +
+        `imagePrompt에는 반드시 화풍(${sb?.artStyle ?? "웹툰 스타일"})과 전신, 다양한 표정이 보이는 ` +
+        "character reference sheet 형식임을 포함하라. 주요 인물 2~5명만.",
+      user: [`스토리보드:\n${JSON.stringify(sb, null, 2)}`, this.interviewContext(project)].join(
+        "\n\n",
+      ),
+      schemaName: "characters",
+      schema: CHARACTERS_SCHEMA as unknown as Record<string, unknown>,
+      onProgress,
+    });
+    return out.characters;
+  }
+
+  async generateEpisodeDetail(
+    project: Project,
+    episodeIndex: number,
+    onProgress?: ProgressFn,
+  ): Promise<EpisodeDetail> {
     const sb = project.storyboard;
     if (!sb) throw new Error("storyboard not generated yet");
     const ep = sb.episodes.find((e) => e.index === episodeIndex);
     if (!ep) throw new Error(`episode ${episodeIndex} not in storyboard`);
 
+    const characters = project.characters
+      .map((c) => `- ${c.name}: ${c.description} / 외형: ${c.appearance}`)
+      .join("\n");
+
     return this.structured<EpisodeDetail>({
       system:
         "당신은 웹툰 콘티 작가다. 스토리보드와 해당 화 줄거리를 바탕으로 한 화를 구체화하라. " +
-        "scenario에는 그 화의 상세 시나리오를 쓰고, panels에는 컷(패널) 단위로 6~12개를 작성하라. " +
+        "scenario에는 그 화의 상세 시나리오를 쓰고, panels에는 컷(패널) 단위로 작성하라. " +
+        "실제 연재 웹툰 기준으로 한 화는 80~90컷이다. 반드시 80컷 이상 90컷 이하로 작성하라. " +
         "각 패널의 imagePrompt는 이미지 생성 모델에 넘길 영어 프롬프트로, " +
-        `화풍(${sb.artStyle})과 등장인물 외형 묘사를 일관되게 포함하라. ` +
+        `화풍(${sb.artStyle})을 일관되게 포함하고, 등장 캐릭터의 외형을 캐릭터 시트와 일치하게 묘사하라. ` +
+        "characterNames에는 그 컷에 등장하는 캐릭터 이름을 정확히 적어라(아래 캐릭터 목록의 name과 동일하게). " +
         "description과 dialogue는 한국어로 작성하라.",
       user: [
         `스토리보드 전체:\n${JSON.stringify(sb, null, 2)}`,
+        `캐릭터 시트:\n${characters || "(없음)"}`,
         `구체화할 화: ${ep.index}화 — ${ep.title}\n줄거리: ${ep.synopsis}`,
         this.interviewContext(project),
       ].join("\n\n"),
       schemaName: "episode_detail",
       schema: EPISODE_SCHEMA as unknown as Record<string, unknown>,
+      onProgress,
     });
   }
 
-  /** Generate a panel image with gpt-image-2, using example images as style reference (edits API). */
-  async generatePanelImage(
+  /** revise existing storyboard episodes or extend with new ones, per user instruction */
+  async reviseEpisodes(
     project: Project,
-    imagePrompt: string,
-    outName: string,
-  ): Promise<string> {
-    const prompt =
-      `Webtoon panel, vertical-scroll Korean webtoon style. ${imagePrompt}` +
-      (project.storyboard ? ` Art style: ${project.storyboard.artStyle}.` : "") +
-      " Match the art style of the reference images exactly.";
+    instruction: string,
+    onProgress?: ProgressFn,
+  ): Promise<{ episodes: Storyboard["episodes"] }> {
+    const sb = project.storyboard;
+    if (!sb) throw new Error("storyboard not generated yet");
+    return this.structured<{ episodes: Storyboard["episodes"] }>({
+      system:
+        "당신은 웹툰 기획 전문 작가다. 기존 스토리보드의 화 목록을 사용자의 지시에 따라 수정하거나 " +
+        "뒤에 새 화를 추가하라. 수정 지시가 없는 화는 그대로 유지하라. " +
+        "결과는 전체 화 목록(기존 유지분 포함)을 index 순서대로 반환하라. 한국어로 작성하라.",
+      user: [
+        `현재 화 목록:\n${JSON.stringify(sb.episodes, null, 2)}`,
+        `스토리보드 개요: ${sb.title} — ${sb.logline} (${sb.genre})`,
+        `사용자 지시: ${instruction}`,
+      ].join("\n\n"),
+      schemaName: "revise_episodes",
+      schema: EPISODES_SCHEMA as unknown as Record<string, unknown>,
+      onProgress,
+    });
+  }
 
+  /** generate an image; reference images passed as buffers. returns png buffer */
+  async generateImage(
+    prompt: string,
+    references: { buffer: Buffer; name: string }[],
+  ): Promise<Buffer> {
     let b64: string | undefined;
-    if (project.exampleImages.length > 0) {
+    if (references.length > 0) {
       const refs = await Promise.all(
-        project.exampleImages.slice(0, 4).map(async (img) => {
-          const buf = await fs.readFile(path.join(UPLOADS_DIR, img.filename));
-          return toFile(buf, img.filename, { type: "image/png" });
-        }),
+        references.slice(0, 6).map((r) => toFile(r.buffer, r.name, { type: "image/png" })),
       );
       const res = await this.client.images.edit({
         model: this.imageModel,
@@ -231,11 +322,7 @@ export class LlmService {
       });
       b64 = res.data?.[0]?.b64_json;
     }
-
     if (!b64) throw new Error("image generation returned no data");
-    await fs.mkdir(GENERATED_DIR, { recursive: true });
-    const filename = `${outName}.png`;
-    await fs.writeFile(path.join(GENERATED_DIR, filename), Buffer.from(b64, "base64"));
-    return `/files/generated/${filename}`;
+    return Buffer.from(b64, "base64");
   }
 }

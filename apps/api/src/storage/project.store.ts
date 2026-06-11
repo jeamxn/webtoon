@@ -1,46 +1,66 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import { Injectable, NotFoundException } from "@nestjs/common";
 import type { Project } from "@webtoon/shared";
-import { GENERATED_DIR, PROJECTS_DIR, UPLOADS_DIR } from "./paths";
+import { DbService } from "../infra/db.service";
+import { RedisService } from "../infra/redis.service";
+
+const CACHE_TTL_SEC = 300;
+const key = (id: string) => `project:${id}`;
 
 @Injectable()
 export class ProjectStore {
-  private async ensureDirs(): Promise<void> {
-    await fs.mkdir(PROJECTS_DIR, { recursive: true });
-    await fs.mkdir(UPLOADS_DIR, { recursive: true });
-    await fs.mkdir(GENERATED_DIR, { recursive: true });
-  }
-
-  private filePath(id: string): string {
-    return path.join(PROJECTS_DIR, `${id}.json`);
-  }
+  constructor(
+    private readonly db: DbService,
+    private readonly redis: RedisService,
+  ) {}
 
   async save(project: Project): Promise<Project> {
-    await this.ensureDirs();
     project.updatedAt = new Date().toISOString();
-    await fs.writeFile(this.filePath(project.id), JSON.stringify(project, null, 2));
+    await this.db.pool.query(
+      `INSERT INTO projects (id, data, created_at, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = $4`,
+      [project.id, JSON.stringify(project), project.createdAt, project.updatedAt],
+    );
+    await this.redis.client.setex(key(project.id), CACHE_TTL_SEC, JSON.stringify(project));
     return project;
   }
 
   async get(id: string): Promise<Project> {
-    try {
-      const raw = await fs.readFile(this.filePath(id), "utf-8");
-      return JSON.parse(raw) as Project;
-    } catch {
-      throw new NotFoundException(`project ${id} not found`);
-    }
+    const cached = await this.redis.client.get(key(id));
+    if (cached) return JSON.parse(cached) as Project;
+
+    const res = await this.db.pool.query<{ data: Project }>(
+      "SELECT data FROM projects WHERE id = $1",
+      [id],
+    );
+    if (res.rows.length === 0) throw new NotFoundException(`project ${id} not found`);
+    const project = res.rows[0].data;
+    await this.redis.client.setex(key(id), CACHE_TTL_SEC, JSON.stringify(project));
+    return project;
   }
 
   async list(): Promise<Project[]> {
-    await this.ensureDirs();
-    const files = await fs.readdir(PROJECTS_DIR);
-    const projects: Project[] = [];
-    for (const f of files) {
-      if (!f.endsWith(".json")) continue;
-      const raw = await fs.readFile(path.join(PROJECTS_DIR, f), "utf-8");
-      projects.push(JSON.parse(raw) as Project);
+    const res = await this.db.pool.query<{ data: Project }>(
+      "SELECT data FROM projects ORDER BY created_at DESC",
+    );
+    return res.rows.map((r) => r.data);
+  }
+
+  /** atomic read-modify-write under a per-project redis lock to avoid lost updates from parallel jobs */
+  async update(id: string, mutate: (p: Project) => void | Promise<void>): Promise<Project> {
+    const lockKey = `lock:${key(id)}`;
+    const deadline = Date.now() + 15_000;
+    while (!(await this.redis.client.set(lockKey, "1", "PX", 10_000, "NX"))) {
+      if (Date.now() > deadline) throw new Error(`lock timeout for project ${id}`);
+      await new Promise((r) => setTimeout(r, 50));
     }
-    return projects.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    try {
+      await this.redis.client.del(key(id)); // force fresh read
+      const project = await this.get(id);
+      await mutate(project);
+      return await this.save(project);
+    } finally {
+      await this.redis.client.del(lockKey);
+    }
   }
 }

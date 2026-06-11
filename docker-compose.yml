@@ -1,4 +1,30 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: webtoon
+      POSTGRES_PASSWORD: webtoon
+      POSTGRES_DB: webtoon
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webtoon"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   api:
     build:
       context: .
@@ -8,10 +34,15 @@ services:
       OPENAI_TEXT_MODEL: ${OPENAI_TEXT_MODEL:-gpt-5.5}
       OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-2}
       API_PORT: 4000
-    volumes:
-      - webtoon-data:/app/data
+      DATABASE_URL: postgres://webtoon:webtoon@postgres:5432/webtoon
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "4000:4000"
+      - "${API_PORT:-4000}:4000"
 
   web:
     build:
@@ -20,7 +51,7 @@ services:
     depends_on:
       - api
     ports:
-      - "3000:80"
+      - "${WEB_PORT:-3030}:80"
 
 volumes:
-  webtoon-data:
+  pgdata:

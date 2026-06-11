@@ -2,12 +2,18 @@ import type { Answer, EpisodeDetail, Project, Question } from "@webtoon/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
+  addEpisode,
   buildStoryboard,
   detailEpisode,
+  editEpisode,
+  generateCharacterImage,
   generatePanelImage,
   getProject,
+  regenerateCharacters,
+  reviseEpisodes,
   submitAnswers,
 } from "../api";
+import { JobsPanel, useProjectJobs } from "../jobs";
 
 function QuestionCard({
   question,
@@ -47,12 +53,54 @@ function QuestionCard({
   );
 }
 
+function EpisodeEditor({
+  initialTitle,
+  initialSynopsis,
+  onSave,
+  onCancel,
+}: {
+  initialTitle: string;
+  initialSynopsis: string;
+  onSave: (title: string, synopsis: string) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(initialTitle);
+  const [synopsis, setSynopsis] = useState(initialSynopsis);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <input
+        type="text"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="제목"
+      />
+      <textarea
+        rows={4}
+        style={{ marginTop: 6 }}
+        value={synopsis}
+        onChange={(e) => setSynopsis(e.target.value)}
+        placeholder="줄거리"
+      />
+      <div className="row" style={{ marginTop: 6 }}>
+        <button type="button" onClick={() => onSave(title, synopsis)}>
+          저장
+        </button>
+        <button type="button" className="secondary" onClick={onCancel}>
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingEp, setEditingEp] = useState<number | null>(null);
+  const [addingEp, setAddingEp] = useState(false);
+  const [reviseText, setReviseText] = useState("");
 
   const refresh = useCallback(() => {
     if (!id) return;
@@ -64,6 +112,8 @@ export default function ProjectPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const { active } = useProjectJobs(id, refresh);
 
   if (!id) return null;
   if (!project)
@@ -79,27 +129,21 @@ export default function ProjectPage() {
       ? currentRound.questions
       : [];
   const answeredCount = currentQuestions.filter((q) => answers[q.id]?.trim()).length;
+  const questionsJobRunning = active.some((j) => j.type === "questions");
 
-  const run = async (key: string, fn: () => Promise<unknown>) => {
-    setBusy(key);
+  const act = (fn: () => Promise<unknown>) => {
     setError(null);
-    try {
-      await fn();
-      refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
+    fn().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
   const onSubmitAnswers = () =>
-    run("answers", async () => {
+    act(async () => {
       const payload: Answer[] = currentQuestions
         .filter((q) => answers[q.id]?.trim())
         .map((q) => ({ questionId: q.id, questionText: q.text, answer: answers[q.id].trim() }));
       await submitAnswers(id, payload);
       setAnswers({});
+      refresh();
     });
 
   const episodeFor = (index: number): EpisodeDetail | undefined =>
@@ -107,6 +151,7 @@ export default function ProjectPage() {
 
   return (
     <main>
+      <JobsPanel jobs={active} />
       <p>
         <Link to="/">← 홈</Link>
       </p>
@@ -139,6 +184,11 @@ export default function ProjectPage() {
               ))}
             </details>
           ))}
+          {questionsJobRunning && currentQuestions.length === 0 && (
+            <p className="muted">
+              <span className="spinner" /> 질문 생성 중... (작업 패널에서 응답 미리보기)
+            </p>
+          )}
           {currentQuestions.map((q) => (
             <QuestionCard
               key={q.id}
@@ -151,19 +201,63 @@ export default function ProjectPage() {
             <button
               type="button"
               onClick={onSubmitAnswers}
-              disabled={busy !== null || answeredCount === 0}
+              disabled={answeredCount === 0 || questionsJobRunning}
             >
-              {busy === "answers" ? "다음 질문 생성 중..." : "답변 제출 → 다음 질문"}
+              답변 제출 → 다음 질문
             </button>
             <button
               type="button"
               className="secondary"
-              onClick={() => run("storyboard", () => buildStoryboard(id))}
-              disabled={busy !== null || project.rounds.length < 2}
+              onClick={() => act(() => buildStoryboard(id))}
+              disabled={project.rounds.length < 1}
             >
-              {busy === "storyboard" ? "스토리보드 생성 중..." : "이만하면 충분, 스토리보드 만들기"}
+              이만하면 충분, 스토리보드 만들기
             </button>
-            {busy && <span className="spinner" />}
+          </div>
+        </>
+      )}
+
+      {/* ----- characters ----- */}
+      {project.characters.length > 0 && (
+        <>
+          <div className="row">
+            <h2>캐릭터</h2>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => act(() => regenerateCharacters(id))}
+            >
+              캐릭터 다시 생성
+            </button>
+          </div>
+          <div className="char-grid">
+            {project.characters.map((c) => (
+              <div key={c.id} className="card" style={{ margin: 0 }}>
+                {c.imageUrl ? (
+                  <img className="char-img" src={c.imageUrl} alt={c.name} />
+                ) : (
+                  <div className="char-img placeholder">
+                    <span className="spinner" />
+                  </div>
+                )}
+                <strong>{c.name}</strong>
+                <p className="muted" style={{ margin: "4px 0" }}>
+                  {c.description}
+                </p>
+                <details>
+                  <summary className="muted">외형</summary>
+                  <p className="muted">{c.appearance}</p>
+                </details>
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{ marginTop: 6 }}
+                  onClick={() => act(() => generateCharacterImage(id, c.id))}
+                >
+                  이미지 다시 생성
+                </button>
+              </div>
+            ))}
           </div>
         </>
       )}
@@ -179,15 +273,55 @@ export default function ProjectPage() {
             <p className="muted">
               장르: {project.storyboard.genre} · 화풍: {project.storyboard.artStyle}
             </p>
-            <p className="muted">
-              등장인물:{" "}
-              {project.storyboard.characters.map((c) => `${c.name}(${c.description})`).join(", ")}
-            </p>
+          </div>
+
+          <div className="card">
+            <div className="muted">회차 일괄 수정/추가 (AI)</div>
+            <textarea
+              rows={2}
+              style={{ marginTop: 6 }}
+              placeholder="예: 3화를 더 코믹하게 바꾸고, 뒤에 에필로그 2화를 추가해줘"
+              value={reviseText}
+              onChange={(e) => setReviseText(e.target.value)}
+            />
+            <div className="row" style={{ marginTop: 6 }}>
+              <button
+                type="button"
+                disabled={!reviseText.trim()}
+                onClick={() =>
+                  act(async () => {
+                    await reviseEpisodes(id, reviseText.trim());
+                    setReviseText("");
+                  })
+                }
+              >
+                AI로 회차 수정/추가
+              </button>
+              <button type="button" className="secondary" onClick={() => setAddingEp(true)}>
+                직접 회차 추가
+              </button>
+            </div>
+            {addingEp && (
+              <EpisodeEditor
+                initialTitle=""
+                initialSynopsis=""
+                onSave={(title, synopsis) =>
+                  act(async () => {
+                    await addEpisode(id, { title, synopsis });
+                    setAddingEp(false);
+                    refresh();
+                  })
+                }
+                onCancel={() => setAddingEp(false)}
+              />
+            )}
           </div>
 
           {project.storyboard.episodes.map((ep) => {
             const detail = episodeFor(ep.index);
-            const key = `ep${ep.index}`;
+            const detailJob = active.find(
+              (j) => j.type === "episode_detail" && Number(j.params.episodeIndex) === ep.index,
+            );
             return (
               <div key={ep.index} className="card">
                 <div className="row">
@@ -197,22 +331,49 @@ export default function ProjectPage() {
                   <button
                     type="button"
                     className="secondary"
-                    onClick={() => run(key, () => detailEpisode(id, ep.index))}
-                    disabled={busy !== null}
+                    onClick={() => setEditingEp(editingEp === ep.index ? null : ep.index)}
                   >
-                    {busy === key ? "구체화 중..." : detail ? "다시 구체화" : "이 화 구체화하기"}
+                    수정
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => act(() => detailEpisode(id, ep.index))}
+                    disabled={!!detailJob}
+                  >
+                    {detailJob ? "구체화 중..." : detail ? "다시 구체화" : "이 화 구체화하기"}
                   </button>
                 </div>
                 <p className="muted">{ep.synopsis}</p>
 
+                {editingEp === ep.index && (
+                  <EpisodeEditor
+                    initialTitle={ep.title}
+                    initialSynopsis={ep.synopsis}
+                    onSave={(title, synopsis) =>
+                      act(async () => {
+                        await editEpisode(id, ep.index, { title, synopsis });
+                        setEditingEp(null);
+                        refresh();
+                      })
+                    }
+                    onCancel={() => setEditingEp(null)}
+                  />
+                )}
+
                 {detail && (
                   <>
                     <details>
-                      <summary className="muted">시나리오 전문</summary>
+                      <summary className="muted">시나리오 전문 ({detail.panels.length}컷)</summary>
                       <p style={{ whiteSpace: "pre-wrap" }}>{detail.scenario}</p>
                     </details>
                     {detail.panels.map((panel) => {
-                      const pkey = `${key}p${panel.index}`;
+                      const panelJob = active.find(
+                        (j) =>
+                          j.type === "panel_image" &&
+                          Number(j.params.episodeIndex) === ep.index &&
+                          Number(j.params.panelIndex) === panel.index,
+                      );
                       return (
                         <div
                           key={panel.index}
@@ -224,15 +385,18 @@ export default function ProjectPage() {
                         >
                           <div className="row">
                             <span className="badge">컷 {panel.index}</span>
+                            {panel.characterNames?.length > 0 && (
+                              <span className="muted">{panel.characterNames.join(", ")}</span>
+                            )}
                             <button
                               type="button"
                               className="secondary"
                               onClick={() =>
-                                run(pkey, () => generatePanelImage(id, ep.index, panel.index))
+                                act(() => generatePanelImage(id, ep.index, panel.index))
                               }
-                              disabled={busy !== null}
+                              disabled={!!panelJob}
                             >
-                              {busy === pkey
+                              {panelJob
                                 ? "그리는 중..."
                                 : panel.imageUrl
                                   ? "다시 그리기"
@@ -246,6 +410,7 @@ export default function ProjectPage() {
                               className="panel-img"
                               src={panel.imageUrl}
                               alt={panel.description}
+                              loading="lazy"
                             />
                           )}
                         </div>
