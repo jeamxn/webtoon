@@ -148,9 +148,13 @@ export class JobRunnerService {
         onProgress(`컷 이미지 생성 중: ${episodeIndex}화 ${panelIndex}컷\n`);
         const refs = await this.panelRefs(project, panel);
         const prompt =
-          `Webtoon panel, vertical-scroll Korean webtoon style. ${panel.imagePrompt}` +
+          `A single webtoon cut: exactly ONE scene at ONE moment in time. ${panel.imagePrompt}` +
           (project.storyboard ? ` Art style: ${project.storyboard.artStyle}.` : "") +
-          " Match the art style and character designs of the reference images exactly.";
+          " Korean vertical-scroll webtoon aesthetic." +
+          " IMPORTANT: one full-bleed illustration only — do NOT divide the image into multiple panels," +
+          " frames, or a comic-page grid. No panel borders, no sequences, no before/after shots." +
+          " Reference images are character design sheets and style samples: copy the character designs" +
+          " and art style ONLY, never their collage/sheet layout.";
         const png = await this.llm.generateImage(prompt, refs);
         const imageId = await this.images.save(project.id, png);
         await this.projects.update(job.projectId, (p) => {
