@@ -6,13 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": [
-      "**",
-      "!**/dist",
-      "!**/build",
-      "!**/.react-router",
-      "!**/.turbo"
-    ]
+    "includes": ["**", "!**/dist", "!**/build", "!**/.react-router", "!**/.turbo"]
   },
   "formatter": {
     "enabled": true,
