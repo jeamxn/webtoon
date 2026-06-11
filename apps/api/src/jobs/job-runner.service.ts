@@ -147,8 +147,18 @@ export class JobRunnerService {
 
         onProgress(`컷 이미지 생성 중: ${episodeIndex}화 ${panelIndex}컷\n`);
         const refs = await this.panelRefs(project, panel);
+        const prevPanel = episode.panels.find((p) => p.index === panelIndex - 1);
+        const nextPanel = episode.panels.find((p) => p.index === panelIndex + 1);
+        const contextParts: string[] = [];
+        if (prevPanel) contextParts.push(`Previous cut (already shown): ${prevPanel.description}`);
+        if (nextPanel) contextParts.push(`Next cut (comes after): ${nextPanel.description}`);
+        const storyContext = contextParts.length
+          ? ` Story context — for continuity ONLY, do NOT draw these moments: ${contextParts.join(" / ")}.` +
+            " Keep character emotions, lighting, and scene continuity consistent with this flow."
+          : "";
         const prompt =
           `A single webtoon cut: exactly ONE scene at ONE moment in time. ${panel.imagePrompt}` +
+          storyContext +
           (project.storyboard ? ` Art style: ${project.storyboard.artStyle}.` : "") +
           " Korean vertical-scroll webtoon aesthetic." +
           " IMPORTANT: one full-bleed illustration only — do NOT divide the image into multiple panels," +
