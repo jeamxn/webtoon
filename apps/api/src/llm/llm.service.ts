@@ -174,11 +174,14 @@ export class LlmService {
         },
       },
     });
+    let accumulated = "";
     stream.on("response.output_text.delta", (e: { delta: string }) => {
+      accumulated += e.delta;
       args.onProgress?.(e.delta);
     });
     const res = await stream.finalResponse();
-    return JSON.parse(res.output_text) as T;
+    const text = res.output_text || accumulated;
+    return JSON.parse(text) as T;
   }
 
   async generateQuestions(project: Project, onProgress?: ProgressFn): Promise<Question[]> {

@@ -50,4 +50,11 @@ docker compose up --build
 | POST | `/api/projects/:id/episodes/:index` | 해당 화 구체화 (시나리오+패널) |
 | POST | `/api/projects/:id/episodes/:index/panels/:panel/image` | 패널 이미지 생성 |
 
-데이터는 `apps/api/data/`에 JSON/파일로 저장됨 (DB 없음).
+## 아키텍처
+
+- **저장소**: PostgreSQL (projects/jobs/images — 이미지는 BYTEA), Redis (프로젝트 캐시 + pub/sub)
+- **백그라운드 잡**: 모든 LLM/이미지 작업은 job으로 등록되어 서버에서 비동기 실행 — 화면을 나가도 계속 진행됨. 여러 잡 병렬 실행 가능
+- **실시간**: `GET /api/projects/:id/events` (SSE) — LLM 스트리밍 텍스트와 잡 상태를 실시간 푸시. 프론트 우하단 작업 패널에서 응답 미리보기 제공
+- **캐릭터 시트**: 스토리보드 생성 직후 캐릭터 설정 생성 → 캐릭터별 이미지 병렬 생성. 컷 이미지 생성 시 해당 컷 등장 캐릭터의 시트를 레퍼런스로 사용
+- **회차**: 직접 수정/추가(`PATCH /episodes/:i`, `POST /episodes`) 또는 AI 일괄 수정(`POST /episodes-revise`)
+- **컷 수**: 1화당 80~90컷

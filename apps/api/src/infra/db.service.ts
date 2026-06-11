@@ -7,9 +7,13 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
   readonly pool: Pool;
 
   constructor(config: ConfigService) {
+    // individual params (PG-style env) instead of a URL, so no credentials-in-URL
     this.pool = new Pool({
-      connectionString:
-        config.get<string>("DATABASE_URL") ?? "postgres://webtoon:webtoon@localhost:5432/webtoon",
+      host: config.get<string>("PGHOST") ?? "localhost",
+      port: Number(config.get<string>("PGPORT") ?? 5432),
+      user: config.get<string>("PGUSER") ?? "webtoon",
+      password: config.get<string>("PGPASSWORD") ?? "webtoon",
+      database: config.get<string>("PGDATABASE") ?? "webtoon",
     });
   }
 
