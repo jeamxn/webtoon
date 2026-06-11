@@ -9,9 +9,9 @@ import type {
   Question,
 } from "@webtoon/shared";
 import { nanoid } from "nanoid";
-import type { LlmService } from "../llm/llm.service";
+import { LlmService } from "../llm/llm.service";
 import { UPLOADS_DIR } from "../storage/paths";
-import type { ProjectStore } from "../storage/project.store";
+import { ProjectStore } from "../storage/project.store";
 import type { UploadedImageFile } from "./upload.types";
 
 @Injectable()

@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, UploadedFiles, UseInterceptors } from "@nestjs/common";
 import { FilesInterceptor } from "@nestjs/platform-express";
 import type { Answer } from "@webtoon/shared";
-import type { ProjectsService } from "./projects.service";
+import { ProjectsService } from "./projects.service";
 import type { UploadedImageFile } from "./upload.types";
 
 @Controller("projects")

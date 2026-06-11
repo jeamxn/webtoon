@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Injectable } from "@nestjs/common";
-import type { ConfigService } from "@nestjs/config";
+import { ConfigService } from "@nestjs/config";
 import type { EpisodeDetail, Project, Question, Storyboard } from "@webtoon/shared";
 import OpenAI, { toFile } from "openai";
 import { GENERATED_DIR, UPLOADS_DIR } from "../storage/paths";
